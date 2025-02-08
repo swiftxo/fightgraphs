@@ -20,3 +20,6 @@ build/
 # Ignore IDE-specific files
 .vscode/
 .idea/
+
+# Ignore Proxies
+proxies.txt
