@@ -6,10 +6,14 @@
 import scrapy
 
 
-class TapologyScraperItem(scrapy.Item):
-    # define the fields for your item here like:
-    # name = scrapy.Field()
-    pass
+class TapologyInitialFighterItem(scrapy.Item):
+    hash = scrapy.Field()
+    tapology_link = scrapy.Field()
+    height = scrapy.Field()
+    weightclass = scrapy.Field()
+    record = scrapy.Field()
+    nationality = scrapy.Field()
+
 
 
 class TapologyPromotionItem(scrapy.Item):

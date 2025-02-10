@@ -1,46 +1,99 @@
-# Promotions Spider Documentation
+# Pipelines Documentation
 
 ## Overview
 
-The Promotions Spider is a Scrapy spider designed to scrape promotion data from the Tapology website. It collects information about various MMA promotions, including their names, links, headquarters, and social media links. The spider is part of the FightGraphs project, which aims to aggregate and analyze comprehensive fight data.
+The `TapologyScraperPipeline` is a Scrapy pipeline designed to process and store scraped items into a MongoDB database. It handles duplicate detection, logging, and bulk insertion of items to ensure efficient and reliable data storage.
 
 ## Architecture and Process
 
-### 1. Spider Initialization
+### 1. Initialization
 
-The spider is defined in the [`PromotionsSpider`](src/tapology_scraper/tapology_scraper/spiders/promotions.py) class. It sets the allowed domains to `tapology.com` and starts scraping from the URL `https://www.tapology.com/fightcenter/promotions`.
+The pipeline is initialized with the MongoDB URI and database name, which are loaded from environment variables. It also sets up collections for different item types (`TapologyPromotionItem` and `TapologyEventItem`) and initializes buffers for batch processing.
 
-### 2. Start Requests
+```python
+class TapologyScraperPipeline:
+    def __init__(self, mongo_uri=MONGO_URI, mongo_db=MONGO_DATABASE):
+        self.mongo_uri = mongo_uri
+        self.mongo_db_name = mongo_db
+        self.collections = { TapologyPromotionItem: 'scrapy_tapology_promotions', TapologyEventItem: 'scrapy_tapology_events' }
+        self.buffers = {collection: [] for collection in self.collections.values()}
+        self.batch_size = 250
+```
 
-The `start_requests` method generates requests for each page of promotions. It iterates through a known range of pages (1 to 59) and constructs the appropriate URL for each page. Before making a request, it checks if the page already exists in the MongoDB database to avoid redundant scraping.
+2. Collection Name
+The collection_name method returns the collection name for a given item type.
 
-### 3. Parsing Responses
+def collection_name(self, item):
+    return self.collections.get(type(item))
 
-The `parse` method processes the response from each request. It extracts the list of promotions using XPath selectors and iterates through each promotion item. For each promotion, it extracts the following details:
-- `promotion_name`: The name of the promotion.
-- `promotion_link`: The link to the promotion's page.
-- `promotion_headquarters`: The headquarters of the promotion.
-- `social_media_links`: A list of social media links associated with the promotion.
 
-These details are stored in a `TapologyPromotionItem` object, which is then yielded for further processing.
+3. From Crawler
+The from_crawler method allows the pipeline to be instantiated with settings from the Scrapy crawler.
 
-### 4. Error Handling
+@classmethod
+def from_crawler(cls, crawler):
+    return cls(
+        mongo_uri=crawler.settings.get('MONGO_URI', MONGO_URI),
+        mongo_db=crawler.settings.get('MONGO_DATABASE', MONGO_DATABASE)
+    )
 
-The `errback_proxy` method handles errors that occur during the request process. It logs proxy errors and retries the request if necessary.
 
-### 5. Logging
+4. Open Spider
+The open_spider method establishes a connection to the MongoDB database when the spider is opened.
 
-The spider uses three loggers to track different aspects of the scraping process:
-- `general_logger`: Logs general information about the scraping process.
-- `item_logger`: Logs details about the items being processed.
-- `proxy_logger`: Logs errors related to proxy usage.
+def open_spider(self, spider):
+    self.client = MongoClient(self.mongo_uri)
+    self.db = self.client[self.mongo_db_name]
+    spider.db = self.db
 
-Log files are stored in the `logs` directory.
 
-### 6. Item Pipeline
+5. Close Spider
+The close_spider method inserts any remaining items in the buffers into the database and closes the MongoDB connection when the spider is closed.
 
-The scraped items are processed by the [`TapologyScraperPipeline`](src/tapology_scraper/tapology_scraper/pipelines.py). The pipeline inserts the items into the MongoDB database, ensuring that all fields are populated with valid data.
+def close_spider(self, spider):
+    for collection, buffer in self.buffers.items():
+        if buffer:
+            try:
+                dupe_logger.info(f"Attempting to insert {len(buffer)} items into {collection}.")
+                self.db[collection].insert_many(buffer)
+                dupe_logger.info(f"Successfully inserted {len(buffer)} items into {collection}.")
+            except Exception as e:
+                dupe_logger.error(f"Error inserting items into {collection}: {e}")
+    self.client.close()
 
-## Conclusion
 
-The Promotions Spider is a crucial component of the FightGraphs project, enabling the collection of detailed promotion data from the Tapology website. Its architecture ensures efficient, traceable, and reliable scraping with it's error handling and logging mechanisms.
+    6. Process Item
+The process_item method processes each item, checks for duplicates, and adds it to the buffer for bulk insertion. If the buffer reaches the batch size, it inserts the items into the database.
+
+def process_item(self, item, spider):
+    collection = self.collection_name(item)
+    if not collection:
+        raise DropItem(f"Invalid item type: {type(item)}")
+    
+    adapter = ItemAdapter(item)
+    hash_string = ''
+    for key, value in sorted(adapter.items()):
+        if value is None:
+            adapter[key] = 'N/A'
+        hash_string += str(value)
+    adapter['hash'] = hashlib.sha256(hash_string.encode()).hexdigest()
+
+    if self.db[collection].find_one({'hash': adapter['hash']}):
+        dupe_logger.info(f"Duplicate item found of type {type(item)}: {adapter['hash']} in collection {collection}")
+        raise DropItem(f"Duplicate item found: {adapter['hash']}")
+    else:
+        self.buffers[collection].append(dict(adapter))
+        if len(self.buffers[collection]) >= self.batch_size:
+            try:
+                self.db[collection].insert_many(self.buffers[collection])
+                self.buffers[collection] = [] 
+            except Exception as e:
+                dupe_logger.error(f"Error inserting items into {collection}: {e}")
+    
+    return item
+
+
+
+    7. Logging
+The pipeline sets up logging to track duplicate items and errors during the insertion process. Log files are stored in the logs directory.
+

@@ -86,7 +86,10 @@ class EventsSpider(scrapy.Spider):
                         event_item['fighters'].append(link)
                     elif '/fightcenter/bouts/' in link and 'fightcenter/bouts/' not in event_item['fights']:
                         event_item['fights'].append(link)
-            yield scrapy.Request(event_item['event_link'], callback=self.parse_event_details, meta={'event_item': event_item})
+            try:
+                yield scrapy.Request(event_item['event_link'], callback=self.parse_event_details, meta={'event_item': event_item})
+            except Exception as e:
+                proxy_logger.error(f"Error in starting request for promotion {event_item['event_link']}: {e} for spider {self.name}")
             general_logger.info(f"Scraping event details for {['event_name']} - {event_item['event_link']}")
         
 
